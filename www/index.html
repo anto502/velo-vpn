@@ -1631,6 +1631,10 @@
   }, 5000);
 
   initAds();
+
+      if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.StatusBar) {
+        window.Capacitor.Plugins.StatusBar.setOverlaysWebView({ overlay: true });
+      }
 </script>
 </body>
 </html>
