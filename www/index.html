@@ -53,7 +53,7 @@
   .app.has-banner-ad .view{ padding-bottom:50px; }
   .app{
     width:100%; max-width:430px; min-height:100vh; min-height:100dvh; position:relative;
-    padding-top:env(safe-area-inset-top); padding-bottom:env(safe-area-inset-bottom);
+    padding-top:max(28px, env(safe-area-inset-top)); padding-bottom:env(safe-area-inset-bottom);
   }
   .view{ position:absolute; inset:0; display:flex; flex-direction:column; opacity:1; transition:opacity .25s ease; }
   .view.hidden{ opacity:0; pointer-events:none; }
