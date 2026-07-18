@@ -51,9 +51,7 @@
   }
   .app.has-banner-ad #adBannerSlot{ display:flex; }
   .app.has-banner-ad .view{ padding-bottom:50px; }
-  .app{
-    width:100%; max-width:430px; min-height:100vh; min-height:100dvh; position:relative;
-    padding-top:84px; padding-bottom:0;
+padding-top:max(50px, env(safe-area-inset-top));
   }
   }
   }
