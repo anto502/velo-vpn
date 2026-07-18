@@ -17,4 +17,21 @@ jobs:
         run: npx cap sync android
       - name: Add AdMob App ID to AndroidManifest
         run: |
-          sed -i '/<\/application>/i\    <meta-data android:name=
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          awk '{print} /<application/ && !x {print "    <meta-data android:name=\"com.google.android.gms.ads.APPLICATION_ID\" android:value=\"ca-app-pub-4219488272694103~5061285797\"/>"; x=1}' "$MANIFEST" > tmp_manifest.xml
+          mv tmp_manifest.xml "$MANIFEST"
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - name: Build APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: velo-vpn-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
