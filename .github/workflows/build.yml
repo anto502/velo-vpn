@@ -15,6 +15,9 @@ jobs:
         run: npx cap add android
       - name: Sync
         run: npx cap sync android
+      - name: Add AdMob App ID to AndroidManifest
+        run: |
+          sed -i '/<application/a\    <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-4219488272694103~5061285797"/>' android/app/src/main/AndroidManifest.xml
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
