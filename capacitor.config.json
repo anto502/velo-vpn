@@ -1,5 +1,11 @@
 {
   "appId": "com.anto502.velovpn",
   "appName": "Velo VPN",
-  "webDir": "www"
+  "webDir": "www",
+  "plugins": {
+    "StatusBar": {
+      "overlaysWebView": true,
+      "style": "DARK"
+    }
+  }
 }
