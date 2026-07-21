@@ -17,11 +17,48 @@ jobs:
         run: npx cap sync android
       - name: Generate app icons
         run: npx capacitor-assets generate --android --iconBackgroundColor "#0b1120" --iconBackgroundColorDark "#0b1120"
+
+      - name: Copy VeloVpnPlugin into Android project
+        run: |
+          mkdir -p android/app/src/main/java/com/anto502/velovpn
+          cp native/VeloVpnPlugin.kt android/app/src/main/java/com/anto502/velovpn/VeloVpnPlugin.kt
+
+      - name: Add WireGuard dependency to app build.gradle
+        run: |
+          GRADLE=android/app/build.gradle
+          awk '{print} /^dependencies {/ && !x {print "    implementation \x27com.wireguard.android:tunnel:1.0.20260102\x27"; x=1}' "$GRADLE" > tmp_gradle.gradle
+          mv tmp_gradle.gradle "$GRADLE"
+
+      - name: Register VeloVpnPlugin in MainActivity
+        run: |
+          MAIN=android/app/src/main/java/com/anto502/velovpn/MainActivity.java
+          printf '%s\n' \
+            'package com.anto502.velovpn;' \
+            '' \
+            'import android.os.Bundle;' \
+            'import com.getcapacitor.BridgeActivity;' \
+            '' \
+            'public class MainActivity extends BridgeActivity {' \
+            '    @Override' \
+            '    public void onCreate(Bundle savedInstanceState) {' \
+            '        registerPlugin(VeloVpnPlugin.class);' \
+            '        super.onCreate(savedInstanceState);' \
+            '    }' \
+            '}' \
+            > "$MAIN"
+
+      - name: Add VPN permission to AndroidManifest
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          awk '{if (/<application/ && !x) {print "    <uses-permission android:name=\"android.permission.INTERNET\"/>"; x=1} print}' "$MANIFEST" > tmp_manifest.xml
+          mv tmp_manifest.xml "$MANIFEST"
+
       - name: Add AdMob App ID to AndroidManifest
         run: |
           MANIFEST=android/app/src/main/AndroidManifest.xml
           awk '{if (/<\/application>/ && !x) {print "    <meta-data android:name=\"com.google.android.gms.ads.APPLICATION_ID\" android:value=\"ca-app-pub-4219488272694103~5061285797\"/>"; x=1} print}' "$MANIFEST" > tmp_manifest.xml
           mv tmp_manifest.xml "$MANIFEST"
+
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
