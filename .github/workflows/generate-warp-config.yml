@@ -18,19 +18,31 @@ jobs:
 
       - name: Register with Cloudflare WARP
         run: |
-          RESPONSE=$(curl -s -X POST "https://api.cloudflareclient.com/v0a2158/reg" \
+          curl -s -X POST "https://api.cloudflareclient.com/v0a2158/reg" \
             -H "Content-Type: application/json" \
             -H "User-Agent: okhttp/3.12.1" \
-            -d "{\"key\":\"${{ steps.keys.outputs.public }}\",\"install_id\":\"\",\"fcm_token\":\"\",\"tos\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"type\":\"Android\",\"locale\":\"en_US\"}")
-          echo "$RESPONSE" > warp_response.json
+            -d "{\"key\":\"${{ steps.keys.outputs.public }}\",\"install_id\":\"\",\"fcm_token\":\"\",\"tos\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"type\":\"Android\",\"locale\":\"en_US\"}" \
+            -o warp_response.json
           cat warp_response.json
+
+      - name: Enable WARP mode
+        run: |
+          REG_ID=$(jq -r '.id' warp_response.json)
+          TOKEN=$(jq -r '.token' warp_response.json)
+          curl -s -X PATCH "https://api.cloudflareclient.com/v0a2158/reg/$REG_ID" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: okhttp/3.12.1" \
+            -H "Authorization: Bearer $TOKEN" \
+            -d '{"warp_enabled":true}' \
+            -o warp_enabled_response.json
+          cat warp_enabled_response.json
 
       - name: Build client config
         run: |
-          CLIENT_IPV4=$(jq -r '.result.config.interface.addresses.v4' warp_response.json)
-          CLIENT_IPV6=$(jq -r '.result.config.interface.addresses.v6' warp_response.json)
-          PEER_PUBLIC=$(jq -r '.result.config.peers[0].public_key' warp_response.json)
-          ENDPOINT_HOST=$(jq -r '.result.config.peers[0].endpoint.host' warp_response.json)
+          CLIENT_IPV4=$(jq -r '.config.interface.addresses.v4' warp_response.json)
+          CLIENT_IPV6=$(jq -r '.config.interface.addresses.v6' warp_response.json)
+          PEER_PUBLIC=$(jq -r '.config.peers[0].public_key' warp_response.json)
+          ENDPOINT_HOST=$(jq -r '.config.peers[0].endpoint.host' warp_response.json)
           cat <<EOF > wgclient.conf
           [Interface]
           PrivateKey = ${{ steps.keys.outputs.private }}
