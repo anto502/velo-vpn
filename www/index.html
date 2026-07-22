@@ -1307,8 +1307,11 @@
       await plugin.connect();
       if (connState === 'connecting') setState('connected');
     }catch(err){
-      showToast('Could not connect — ' + (err && err.message ? err.message : 'permission denied'));
+      const fullMsg = (err && err.message) ? err.message : 'permission denied';
+      showToast('Could not connect — ' + fullMsg);
+      alert('VPN connect error:\n' + fullMsg);
       setState('idle');
+  }
     }
   }
 
