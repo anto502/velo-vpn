@@ -22,6 +22,7 @@ class VeloVpnPlugin : Plugin() {
         PrivateKey = sNUocN9HmoaQdhznsX4lx7HhH5CpeaW4Axm+W8aTjUQ=
         Address = 172.16.0.2/32, 2606:4700:110:8b83:3654:a1ca:1e55:89e1/128
         DNS = 1.1.1.1
+        MTU = 1280
 
         [Peer]
         PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=
