@@ -22,6 +22,9 @@ jobs:
         run: |
           mkdir -p android/app/src/main/java/com/anto502/velovpn
           cp native/VeloVpnPlugin.kt android/app/src/main/java/com/anto502/velovpn/VeloVpnPlugin.kt
+          - name: Bump minSdkVersion for WireGuard
+        run: |
+          sed -i 's/minSdkVersion [0-9]*/minSdkVersion 24/' android/variables.gradle
 
       - name: Add WireGuard dependency to app build.gradle
         run: |
@@ -47,11 +50,7 @@ jobs:
             '}' \
             > "$MAIN"
 
-      - name: Add VPN permission to AndroidManifest
-        run: |
-          MANIFEST=android/app/src/main/AndroidManifest.xml
-          awk '{if (/<application/ && !x) {print "    <uses-permission android:name=\"android.permission.INTERNET\"/>"; x=1} print}' "$MANIFEST" > tmp_manifest.xml
-          mv tmp_manifest.xml "$MANIFEST"
+      
 
       - name: Add AdMob App ID to AndroidManifest
         run: |
