@@ -24,7 +24,7 @@ jobs:
           cp native/VeloVpnPlugin.kt android/app/src/main/java/com/anto502/velovpn/VeloVpnPlugin.kt
       - name: Bump minSdkVersion for WireGuard
         run: |
-          sed -i 's/minSdkVersion [0-9]*/minSdkVersion 24/' android/variables.gradle
+          sed -i 's/minSdkVersion = [0-9]*/minSdkVersion = 24/' android/variables.gradle
 
       - name: Add WireGuard dependency to app build.gradle
         run: |
