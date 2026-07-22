@@ -14,8 +14,11 @@ import com.wireguard.config.Config
 import com.wireguard.crypto.KeyPair
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
+import java.net.UnknownHostException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -29,6 +32,13 @@ class VeloVpnPlugin : Plugin() {
 
     private val prefsName = "velo_vpn_wg"
     private val prefsKeyConfig = "wg_config"
+
+    // Retry/backoff tuning for the network calls made during registration and
+    // tunnel bring-up. These calls occasionally fail transiently (slow mobile
+    // networks, momentary DNS hiccups, carrier-level interference) and a
+    // short retry sequence resolves most of those without any user action.
+    private val maxNetworkAttempts = 3
+    private val baseBackoffMs = 800L
 
     inner class SimpleTunnel(private val name: String) : Tunnel {
         var state: Tunnel.State = Tunnel.State.DOWN
@@ -71,14 +81,50 @@ class VeloVpnPlugin : Plugin() {
             try {
                 val configText = getOrCreateWireGuardConfig()
                 val config = Config.parse(ByteArrayInputStream(configText.toByteArray()))
-                backend?.setState(tunnel, Tunnel.State.UP, config)
+                bringTunnelUpWithRetry(config)
                 val ret = JSObject()
                 ret.put("status", "connected")
                 call.resolve(ret)
             } catch (e: Exception) {
-                call.reject("Failed to connect: ${e.message}")
+                call.reject(describeConnectFailure(e))
             }
         }.start()
+    }
+
+    // Bringing the WireGuard tunnel up can also fail transiently (e.g. the
+    // handshake packet gets dropped once), so it gets the same short retry
+    // treatment as the HTTP registration calls below.
+    private fun bringTunnelUpWithRetry(config: Config) {
+        var lastError: Exception? = null
+        for (attempt in 1..maxNetworkAttempts) {
+            try {
+                backend?.setState(tunnel, Tunnel.State.UP, config)
+                return
+            } catch (e: Exception) {
+                lastError = e
+                if (attempt < maxNetworkAttempts) sleepBackoff(attempt)
+            }
+        }
+        throw lastError ?: IOException("Failed to bring tunnel up")
+    }
+
+    // Turns a low-level exception into a message that actually tells the user
+    // (and whoever reads their bug report) what kind of failure this was,
+    // instead of a bare "Connection reset" with no context.
+    private fun describeConnectFailure(e: Exception): String {
+        val reason = when {
+            e is UnknownHostException ->
+                "couldn't resolve Cloudflare's server — check DNS / try switching network"
+            e is SocketTimeoutException ->
+                "connection timed out — the network is slow or dropping packets"
+            e.message?.contains("reset", ignoreCase = true) == true ->
+                "connection was reset by the network before it completed. This usually " +
+                    "means something on the network path (ISP / firewall / captive portal) " +
+                    "is blocking WireGuard or Cloudflare's registration endpoint, not a bug " +
+                    "in the app. Retried $maxNetworkAttempts times on this network."
+            else -> e.message ?: "unknown error"
+        }
+        return "Failed to connect: $reason"
     }
 
     @PluginMethod
@@ -138,12 +184,12 @@ class VeloVpnPlugin : Plugin() {
             .put("type", "Android")
             .put("locale", "en_US")
 
-        val regJson = httpJson("https://api.cloudflareclient.com/v0a2158/reg", "POST", regBody, null)
+        val regJson = httpJsonWithRetry("https://api.cloudflareclient.com/v0a2158/reg", "POST", regBody, null)
         val regId = regJson.getString("id")
         val token = regJson.getString("token")
 
         // Activate WARP mode for this new identity
-        httpJson(
+        httpJsonWithRetry(
             "https://api.cloudflareclient.com/v0a2158/reg/$regId",
             "PATCH",
             JSONObject().put("warp_enabled", true),
@@ -171,6 +217,32 @@ class VeloVpnPlugin : Plugin() {
         """.trimIndent()
     }
 
+    // Retries transient network failures (timeouts, resets, temporary DNS
+    // failures) up to maxNetworkAttempts times with a short exponential
+    // backoff between tries. Non-transient failures (HTTP 4xx/5xx from
+    // Cloudflare itself) are NOT retried since retrying won't change the
+    // server's answer.
+    private fun httpJsonWithRetry(urlStr: String, method: String, body: JSONObject, bearerToken: String?): JSONObject {
+        var lastError: Exception? = null
+        for (attempt in 1..maxNetworkAttempts) {
+            try {
+                return httpJson(urlStr, method, body, bearerToken)
+            } catch (e: IOException) {
+                lastError = e
+                if (attempt < maxNetworkAttempts) sleepBackoff(attempt)
+            }
+        }
+        throw lastError ?: IOException("Network request failed: $urlStr")
+    }
+
+    private fun sleepBackoff(attempt: Int) {
+        try {
+            Thread.sleep(baseBackoffMs * attempt)
+        } catch (ignored: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
+
     private fun httpJson(urlStr: String, method: String, body: JSONObject, bearerToken: String?): JSONObject {
         val conn = URL(urlStr).openConnection() as HttpURLConnection
         try {
@@ -189,6 +261,9 @@ class VeloVpnPlugin : Plugin() {
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
             if (code !in 200..299) {
+                // HTTP-level rejection from Cloudflare itself — not transient,
+                // so this is thrown as a plain Exception (not IOException) so
+                // httpJsonWithRetry does not waste time retrying it.
                 throw Exception("$method $urlStr failed ($code): $text")
             }
             return JSONObject(text)
@@ -213,4 +288,3 @@ class VeloVpnPlugin : Plugin() {
         }
     }
 }
-    
