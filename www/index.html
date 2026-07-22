@@ -1284,20 +1284,47 @@
     usageDuration.textContent = formatDuration(durationSec);
   }
 
-  function beginConnectFlow(){
-    setState('connecting');
-    clearTimeout(connectFlowTimer);
-    connectFlowTimer = setTimeout(() => {
-      if (connState === 'connecting'){
-        setState('connected');
+  function getVeloVpnPlugin(){
+    try{
+      if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.VeloVpn){
+        return window.Capacitor.Plugins.VeloVpn;
       }
-    }, CONNECT_DURATION);
+    }catch(err){}
+    return null;
   }
 
-  function cancelConnectFlow(){
+  async function beginConnectFlow(){
+    setState('connecting');
+    const plugin = getVeloVpnPlugin();
+    if (!plugin){
+      clearTimeout(connectFlowTimer);
+      connectFlowTimer = setTimeout(() => {
+        if (connState === 'connecting') setState('connected');
+      }, CONNECT_DURATION);
+      return;
+    }
+    try{
+      await plugin.connect();
+      if (connState === 'connecting') setState('connected');
+    }catch(err){
+      showToast('Could not connect — ' + (err && err.message ? err.message : 'permission denied'));
+      setState('idle');
+    }
+  }
+
+  async function cancelConnectFlow(){
     clearTimeout(connectFlowTimer);
+    const plugin = getVeloVpnPlugin();
+    if (plugin){ try{ await plugin.disconnect(); }catch(err){} }
     setState('idle');
     showToast('Connection cancelled');
+  }
+
+  async function disconnectVpn(){
+    const plugin = getVeloVpnPlugin();
+    if (plugin){ try{ await plugin.disconnect(); }catch(err){} }
+    setState('idle');
+    showToast('Disconnected');
   }
 
   function randomIp(){
@@ -1397,8 +1424,7 @@
     } else if (connState === 'connecting'){
       cancelConnectFlow();
     } else {
-      setState('idle');
-      showToast('Disconnected');
+    disconnectVpn();
     }
   });
 
