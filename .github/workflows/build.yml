@@ -22,7 +22,7 @@ jobs:
         run: |
           mkdir -p android/app/src/main/java/com/anto502/velovpn
           cp native/VeloVpnPlugin.kt android/app/src/main/java/com/anto502/velovpn/VeloVpnPlugin.kt
-          - name: Bump minSdkVersion for WireGuard
+      - name: Bump minSdkVersion for WireGuard
         run: |
           sed -i 's/minSdkVersion [0-9]*/minSdkVersion 24/' android/variables.gradle
 
