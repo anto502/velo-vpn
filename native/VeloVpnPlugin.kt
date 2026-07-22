@@ -26,7 +26,7 @@ class VeloVpnPlugin : Plugin() {
 
         [Peer]
         PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=
-        Endpoint = engage.cloudflareclient.com:500
+        Endpoint = engage.cloudflareclient.com:2408
         AllowedIPs = 0.0.0.0/0, ::/0
     """.trimIndent()
 
