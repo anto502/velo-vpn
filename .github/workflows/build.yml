@@ -31,6 +31,20 @@ jobs:
           GRADLE=android/app/build.gradle
           awk '{print} /^dependencies {/ && !x {print "    implementation \x27com.wireguard.android:tunnel:1.0.20260102\x27"; x=1}' "$GRADLE" > tmp_gradle.gradle
           mv tmp_gradle.gradle "$GRADLE"
+       - name: Add Kotlin support to Android project
+        run: |
+          PROJECT_GRADLE=android/build.gradle
+          if ! grep -q "kotlin-gradle-plugin" "$PROJECT_GRADLE"; then
+            sed -i "/classpath 'com.android.tools.build:gradle/a\\        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24'" "$PROJECT_GRADLE"
+          fi
+
+          APP_GRADLE=android/app/build.gradle
+          if ! grep -q "kotlin-android" "$APP_GRADLE"; then
+            sed -i "0,/apply plugin: 'com.android.application'/s//apply plugin: 'com.android.application'\\napply plugin: 'kotlin-android'/" "$APP_GRADLE"
+          fi
+          if ! grep -q "kotlin-stdlib" "$APP_GRADLE"; then
+            sed -i "/^dependencies {/a\\    implementation \"org.jetbrains.kotlin:kotlin-stdlib:1.9.24\"" "$APP_GRADLE"
+          fi
 
       - name: Register VeloVpnPlugin in MainActivity
         run: |
