@@ -19,14 +19,14 @@ class VeloVpnPlugin : Plugin() {
 
     private val wgConfigText = """
         [Interface]
-        PrivateKey = sNUocN9HmoaQdhznsX4lx7HhH5CpeaW4Axm+W8aTjUQ=
-        Address = 172.16.0.2/32, 2606:4700:110:8b83:3654:a1ca:1e55:89e1/128
-        DNS = 1.1.1.1
+        PrivateKey = 0Mrj7IxUbimazcLcGg1UB9iYYekDJ8GimBz7rFeDu2M=
+        Address = 172.16.0.2/32, 2606:4700:110:86ef:97c4:483e:7c43:5fc0/128
+        DNS = 1.1.1.1, 2606:4700:4700::1111
         MTU = 1280
 
         [Peer]
         PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=
-        Endpoint = engage.cloudflareclient.com:2408
+        Endpoint = engage.cloudflareclient.com:4500
         AllowedIPs = 0.0.0.0/0, ::/0
     """.trimIndent()
 
