@@ -31,7 +31,7 @@ jobs:
           GRADLE=android/app/build.gradle
           awk '{print} /^dependencies {/ && !x {print "    implementation \x27com.wireguard.android:tunnel:1.0.20260102\x27"; x=1}' "$GRADLE" > tmp_gradle.gradle
           mv tmp_gradle.gradle "$GRADLE"
-       - name: Add Kotlin support to Android project
+      - name: Add Kotlin support to Android project
         run: |
           PROJECT_GRADLE=android/build.gradle
           if ! grep -q "kotlin-gradle-plugin" "$PROJECT_GRADLE"; then
