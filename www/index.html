@@ -825,7 +825,16 @@
   <div class="toast" id="toast"></div>
 </div>
 
-<script>
+<script> 
+  (function initStatusBar(){
+    const sb = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.StatusBar;
+    if (!sb) return;
+    sb.setOverlaysWebView({ overlay: true }).catch(() => {});
+    sb.setStyle({ style: 'DARK' }).catch(() => {});
+    if (sb.setBackgroundColor) {
+      sb.setBackgroundColor({ color: '#00000000' }).catch(() => {});
+    }
+  })();
   /* ---------------- Shared data ---------------- */
   const regions = [
     { name:'Auto Location', countries:[
@@ -1313,10 +1322,6 @@
       setState('idle');
     }
   }
-  }
-    }
-  }
-
   async function cancelConnectFlow(){
     clearTimeout(connectFlowTimer);
     const plugin = getVeloVpnPlugin();
@@ -1662,11 +1667,6 @@
   }, 5000);
 
   initAds();
-
-  if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.StatusBar) {
-    window.Capacitor.Plugins.StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {});
-  }
-
   // ---- Native Android hardware back button ----
   if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App) {
     window.Capacitor.Plugins.App.addListener('backButton', () => {
@@ -1675,7 +1675,7 @@
         return;
       }
       const openSubview = document.querySelector('.subview:not(.hidden)');
-      if (openSubview) { backToSettings(); return; }
+      if (openSubview) { backToSettings(); return; 
       if (!viewLocation.classList.contains('hidden')) { switchTo(viewHome); return; }
       if (viewHome.classList.contains('hidden') === false) {
         window.Capacitor.Plugins.App.exitApp();
