@@ -1675,7 +1675,7 @@
         return;
       }
       const openSubview = document.querySelector('.subview:not(.hidden)');
-      if (openSubview) { backToSettings(); return; 
+      if (openSubview) { backToSettings(); return; }
       if (!viewLocation.classList.contains('hidden')) { switchTo(viewHome); return; }
       if (viewHome.classList.contains('hidden') === false) {
         window.Capacitor.Plugins.App.exitApp();
