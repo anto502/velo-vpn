@@ -55,7 +55,7 @@ jobs:
           awk '{print} /^dependencies {/ && !x {
             print "    implementation \x27info.guardianproject:tor-android:0.4.8.7\x27";
             print "    implementation \x27info.guardianproject:jtorctl:0.4.5.7\x27";
-            print "    implementation \x27com.github.guardianproject:Orbot-IPtProxy:2.4.0\x27";
+            print "    implementation \x27com.github.guardianproject:Orbot-IPtProxy:0.1.0\x27";
             x=1
           }' "$GRADLE" > tmp_gradle.gradle
           mv tmp_gradle.gradle "$GRADLE"
