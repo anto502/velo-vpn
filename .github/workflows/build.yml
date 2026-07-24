@@ -31,6 +31,27 @@ jobs:
           GRADLE=android/app/build.gradle
           awk '{print} /^dependencies {/ && !x {print "    implementation \x27com.wireguard.android:tunnel:1.0.20260102\x27"; x=1}' "$GRADLE" > tmp_gradle.gradle
           mv tmp_gradle.gradle "$GRADLE"
+
+      - name: Add JitPack repository (for Orbot-IPtProxy)
+        run: |
+          PROJECT_GRADLE=android/build.gradle
+          if ! grep -q "jitpack.io" "$PROJECT_GRADLE"; then
+            # Add to every repositories { ... } block in the project-level file
+            # (covers both buildscript and allprojects blocks, whichever exist)
+            awk '{print} /repositories {/{print "        maven { url \x27https://jitpack.io\x27 }"}' "$PROJECT_GRADLE" > tmp_gradle.gradle
+            mv tmp_gradle.gradle "$PROJECT_GRADLE"
+          fi
+
+      - name: Add Tor/IPtProxy dependencies to app build.gradle
+        run: |
+          GRADLE=android/app/build.gradle
+          awk '{print} /^dependencies {/ && !x {
+            print "    implementation \x27info.guardianproject:tor-android:0.4.8.7\x27";
+            print "    implementation \x27info.guardianproject:jtorctl:0.4.5.7\x27";
+            print "    implementation \x27com.github.guardianproject:Orbot-IPtProxy:2.4.0\x27";
+            x=1
+          }' "$GRADLE" > tmp_gradle.gradle
+          mv tmp_gradle.gradle "$GRADLE"
       - name: Add Kotlin support to Android project
         run: |
           PROJECT_GRADLE=android/build.gradle
