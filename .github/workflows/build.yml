@@ -34,13 +34,20 @@ jobs:
 
       - name: Add JitPack repository (for Orbot-IPtProxy)
         run: |
-          PROJECT_GRADLE=android/build.gradle
-          if ! grep -q "jitpack.io" "$PROJECT_GRADLE"; then
-            # Add to every repositories { ... } block in the project-level file
-            # (covers both buildscript and allprojects blocks, whichever exist)
-            awk '{print} /repositories {/{print "        maven { url \x27https://jitpack.io\x27 }"}' "$PROJECT_GRADLE" > tmp_gradle.gradle
-            mv tmp_gradle.gradle "$PROJECT_GRADLE"
-          fi
+          # Capacitor 6 / AGP 8 projects put repository declarations in
+          # settings.gradle (dependencyResolutionManagement), NOT build.gradle.
+          # Patch whichever of these files actually declares a repositories {}
+          # block, so JitPack is visible wherever Gradle is actually looking.
+          for PROJECT_GRADLE in android/settings.gradle android/build.gradle; do
+            if [ -f "$PROJECT_GRADLE" ] && ! grep -q "jitpack.io" "$PROJECT_GRADLE"; then
+              awk '{print} /repositories {/{print "        maven { url \x27https://jitpack.io\x27 }"}' "$PROJECT_GRADLE" > tmp_gradle.gradle
+              mv tmp_gradle.gradle "$PROJECT_GRADLE"
+            fi
+          done
+          echo "---- settings.gradle ----"
+          cat android/settings.gradle 2>/dev/null || echo "(no settings.gradle)"
+          echo "---- build.gradle ----"
+          cat android/build.gradle
 
       - name: Add Tor/IPtProxy dependencies to app build.gradle
         run: |
