@@ -80,15 +80,63 @@ class VeloVpnPlugin : Plugin() {
         Thread {
             try {
                 val configText = getOrCreateWireGuardConfig()
-                val config = Config.parse(ByteArrayInputStream(configText.toByteArray()))
-                bringTunnelUpWithRetry(config)
+                bringTunnelUpWithEndpointFallback(configText)
                 val ret = JSObject()
                 ret.put("status", "connected")
                 call.resolve(ret)
             } catch (e: Exception) {
+                // If nothing worked after trying every known WARP endpoint, the
+                // cached identity/endpoint pair may just be a bad match for this
+                // network. Drop it so the *next* attempt registers a fresh
+                // identity instead of retrying the same dead combination forever.
+                prefs().edit().remove(prefsKeyConfig).apply()
                 call.reject(describeConnectFailure(e))
             }
         }.start()
+    }
+
+    // Cloudflare's WARP relays are reachable on several anycast IPs and ports,
+    // not just the single host:port returned at registration time. Networks
+    // that block/throttle the default endpoint (common on some Myanmar/Thai
+    // ISPs and mobile carriers) often still allow one of the alternates
+    // through, so this cycles through them before giving up. This is the same
+    // "port hopping" behavior the official WARP client uses.
+    private val fallbackWarpEndpoints = listOf(
+        "162.159.192.1:2408",
+        "162.159.193.10:2408",
+        "162.159.195.10:2408",
+        "162.159.192.1:500",
+        "162.159.192.1:1701",
+        "162.159.192.1:4500",
+        "162.159.192.1:8854"
+    )
+
+    private fun bringTunnelUpWithEndpointFallback(baseConfigText: String) {
+        val registeredEndpoint = Regex("(?m)^Endpoint\\s*=\\s*(.+)$")
+            .find(baseConfigText)?.groupValues?.get(1)?.trim()
+
+        val candidates = (listOfNotNull(registeredEndpoint) + fallbackWarpEndpoints).distinct()
+
+        var lastError: Exception? = null
+        for ((index, endpoint) in candidates.withIndex()) {
+            val candidateText = baseConfigText.replaceFirst(
+                Regex("(?m)^Endpoint\\s*=.*$"),
+                "Endpoint = $endpoint"
+            )
+            try {
+                val config = Config.parse(ByteArrayInputStream(candidateText.toByteArray()))
+                // The first candidate (the endpoint Cloudflare actually assigned
+                // at registration) gets the full retry treatment since it's the
+                // most likely to work. Fallback candidates get one quick try
+                // each so cycling through all of them doesn't take minutes.
+                if (index == 0) bringTunnelUpWithRetry(config) else backend?.setState(tunnel, Tunnel.State.UP, config)
+                return
+            } catch (e: Exception) {
+                lastError = e
+                if (index < candidates.size - 1) sleepBackoff(1)
+            }
+        }
+        throw lastError ?: IOException("Failed to bring tunnel up on any known endpoint")
     }
 
     // Bringing the WireGuard tunnel up can also fail transiently (e.g. the
