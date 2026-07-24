@@ -100,6 +100,13 @@ jobs:
           awk '{if (/<\/application>/ && !x) {print "    <meta-data android:name=\"com.google.android.gms.ads.APPLICATION_ID\" android:value=\"ca-app-pub-4219488272694103~5061285797\"/>"; x=1} print}' "$MANIFEST" > tmp_manifest.xml
           mv tmp_manifest.xml "$MANIFEST"
 
+      - name: Add POST_NOTIFICATIONS permission for VPN foreground service
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          if ! grep -q "POST_NOTIFICATIONS" "$MANIFEST"; then
+            sed -i "0,/<application/s//<uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" \/>\n    <application/" "$MANIFEST"
+          fi
+
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
