@@ -27,47 +27,110 @@ jobs:
         run: |
           sed -i 's/minSdkVersion = [0-9]*/minSdkVersion = 24/' android/variables.gradle
 
+      - name: Debug - list generated gradle files
+        run: |
+          echo "---- android/*.gradle* ----"
+          find android -maxdepth 2 -iname "*.gradle*" -exec echo {} \;
+
       - name: Add Tor dependencies to app build.gradle
         run: |
-          # org.torproject:tor-android-binary is on Maven Central (already in
-          # the default repo list). IPtProxy's tun2socks bindings are only on
-          # JitPack, so add that repo in whichever file actually declares the
-          # repositories {} Gradle resolves from.
-          for PROJECT_GRADLE in android/settings.gradle android/build.gradle; do
-            if [ -f "$PROJECT_GRADLE" ] && ! grep -q "jitpack.io" "$PROJECT_GRADLE"; then
-              awk '{print} /repositories {/{print "        maven { url \x27https://jitpack.io\x27 }"}' "$PROJECT_GRADLE" > tmp_gradle.gradle
-              mv tmp_gradle.gradle "$PROJECT_GRADLE"
+          # Capacitor's generated Android project may use Groovy (settings.gradle,
+          # build.gradle) OR Kotlin DSL (settings.gradle.kts, build.gradle.kts)
+          # depending on the Capacitor CLI version. Detect whichever actually
+          # exists and use the matching syntax for each.
+          add_jitpack_groovy() {
+            local F="$1"
+            if [ -f "$F" ] && ! grep -q "jitpack.io" "$F"; then
+              awk '{print} /repositories {/{print "        maven { url \x27https://jitpack.io\x27 }"}' "$F" > tmp_gradle
+              mv tmp_gradle "$F"
+              echo "Patched (groovy): $F"
             fi
-          done
+          }
+          add_jitpack_kts() {
+            local F="$1"
+            if [ -f "$F" ] && ! grep -q "jitpack.io" "$F"; then
+              awk '{print} /repositories {/{print "        maven(url = \"https://jitpack.io\")"}' "$F" > tmp_gradle
+              mv tmp_gradle "$F"
+              echo "Patched (kts): $F"
+            fi
+          }
 
-          GRADLE=android/app/build.gradle
-          awk '{print} /^dependencies {/ && !x {
-            print "    implementation \x27org.torproject:tor-android-binary:0.4.7.13\x27";
-            print "    implementation \x27com.github.guardianproject:IPtProxy:2.5.0\x27";
-            x=1
-          }' "$GRADLE" > tmp_gradle.gradle
-          mv tmp_gradle.gradle "$GRADLE"
+          add_jitpack_groovy android/settings.gradle
+          add_jitpack_groovy android/build.gradle
+          add_jitpack_kts android/settings.gradle.kts
+          add_jitpack_kts android/build.gradle.kts
+
+          if [ -f android/app/build.gradle ]; then
+            GRADLE=android/app/build.gradle
+            awk '{print} /^dependencies {/ && !x {
+              print "    implementation \x27org.torproject:tor-android-binary:0.4.7.13\x27";
+              print "    implementation \x27com.github.guardianproject:IPtProxy:2.5.0\x27";
+              x=1
+            }' "$GRADLE" > tmp_gradle
+            mv tmp_gradle "$GRADLE"
+          elif [ -f android/app/build.gradle.kts ]; then
+            GRADLE=android/app/build.gradle.kts
+            awk '{print} /^dependencies {/ && !x {
+              print "    implementation(\"org.torproject:tor-android-binary:0.4.7.13\")";
+              print "    implementation(\"com.github.guardianproject:IPtProxy:2.5.0\")";
+              x=1
+            }' "$GRADLE" > tmp_gradle
+            mv tmp_gradle "$GRADLE"
+          fi
+
+          echo "---- settings.gradle(.kts) after patch ----"
+          cat android/settings.gradle 2>/dev/null || cat android/settings.gradle.kts 2>/dev/null
+          echo "---- app/build.gradle(.kts) after patch ----"
+          cat android/app/build.gradle 2>/dev/null || cat android/app/build.gradle.kts 2>/dev/null
 
       - name: Add WireGuard dependency to app build.gradle
         run: |
-          GRADLE=android/app/build.gradle
-          awk '{print} /^dependencies {/ && !x {print "    implementation \x27com.wireguard.android:tunnel:1.0.20260102\x27"; x=1}' "$GRADLE" > tmp_gradle.gradle
-          mv tmp_gradle.gradle "$GRADLE"
+          if [ -f android/app/build.gradle ]; then
+            GRADLE=android/app/build.gradle
+            awk '{print} /^dependencies {/ && !x {print "    implementation \x27com.wireguard.android:tunnel:1.0.20260102\x27"; x=1}' "$GRADLE" > tmp_gradle.gradle
+            mv tmp_gradle.gradle "$GRADLE"
+          elif [ -f android/app/build.gradle.kts ]; then
+            GRADLE=android/app/build.gradle.kts
+            awk '{print} /^dependencies {/ && !x {print "    implementation(\"com.wireguard.android:tunnel:1.0.20260102\")"; x=1}' "$GRADLE" > tmp_gradle.gradle
+            mv tmp_gradle.gradle "$GRADLE"
+          fi
 
       - name: Add Kotlin support to Android project
         run: |
-          PROJECT_GRADLE=android/build.gradle
-          if ! grep -q "kotlin-gradle-plugin" "$PROJECT_GRADLE"; then
-            sed -i "/classpath 'com.android.tools.build:gradle/a\\        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24'" "$PROJECT_GRADLE"
+          if [ -f android/build.gradle ]; then
+            PROJECT_GRADLE=android/build.gradle
+            if ! grep -q "kotlin-gradle-plugin" "$PROJECT_GRADLE"; then
+              sed -i "/classpath 'com.android.tools.build:gradle/a\\        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24'" "$PROJECT_GRADLE"
+            fi
+          elif [ -f android/build.gradle.kts ]; then
+            PROJECT_GRADLE=android/build.gradle.kts
+            if ! grep -q "kotlin-gradle-plugin" "$PROJECT_GRADLE"; then
+              sed -i '/classpath("com.android.tools.build:gradle/a\        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24")' "$PROJECT_GRADLE"
+            fi
           fi
 
-          APP_GRADLE=android/app/build.gradle
-          if ! grep -q "kotlin-android" "$APP_GRADLE"; then
-            sed -i "0,/apply plugin: 'com.android.application'/s//apply plugin: 'com.android.application'\\napply plugin: 'kotlin-android'/" "$APP_GRADLE"
+          if [ -f android/app/build.gradle ]; then
+            APP_GRADLE=android/app/build.gradle
+            if ! grep -q "kotlin-android" "$APP_GRADLE"; then
+              sed -i "0,/apply plugin: 'com.android.application'/s//apply plugin: 'com.android.application'\\napply plugin: 'kotlin-android'/" "$APP_GRADLE"
+            fi
+            if ! grep -q "kotlin-stdlib" "$APP_GRADLE"; then
+              sed -i "/^dependencies {/a\\    implementation \"org.jetbrains.kotlin:kotlin-stdlib:1.9.24\"" "$APP_GRADLE"
+            fi
+          elif [ -f android/app/build.gradle.kts ]; then
+            APP_GRADLE=android/app/build.gradle.kts
+            if ! grep -q "kotlin-android" "$APP_GRADLE"; then
+              sed -i '0,/id("com.android.application")/s//id("com.android.application")\n    id("kotlin-android")/' "$APP_GRADLE"
+            fi
+            if ! grep -q "kotlin-stdlib" "$APP_GRADLE"; then
+              sed -i '/^dependencies {/a\    implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")' "$APP_GRADLE"
+            fi
           fi
-          if ! grep -q "kotlin-stdlib" "$APP_GRADLE"; then
-            sed -i "/^dependencies {/a\\    implementation \"org.jetbrains.kotlin:kotlin-stdlib:1.9.24\"" "$APP_GRADLE"
-          fi
+
+          echo "---- android/build.gradle(.kts) after patch ----"
+          cat android/build.gradle 2>/dev/null || cat android/build.gradle.kts 2>/dev/null
+          echo "---- android/app/build.gradle(.kts) after patch ----"
+          cat android/app/build.gradle 2>/dev/null || cat android/app/build.gradle.kts 2>/dev/null
 
       - name: Register VeloVpnPlugin in MainActivity
         run: |
