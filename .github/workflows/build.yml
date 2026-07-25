@@ -22,9 +22,31 @@ jobs:
         run: |
           mkdir -p android/app/src/main/java/com/anto502/velovpn
           cp native/VeloVpnPlugin.kt android/app/src/main/java/com/anto502/velovpn/VeloVpnPlugin.kt
+          cp native/TorVpnService.kt android/app/src/main/java/com/anto502/velovpn/TorVpnService.kt
       - name: Bump minSdkVersion for WireGuard
         run: |
           sed -i 's/minSdkVersion = [0-9]*/minSdkVersion = 24/' android/variables.gradle
+
+      - name: Add Tor dependencies to app build.gradle
+        run: |
+          # org.torproject:tor-android-binary is on Maven Central (already in
+          # the default repo list). IPtProxy's tun2socks bindings are only on
+          # JitPack, so add that repo in whichever file actually declares the
+          # repositories {} Gradle resolves from.
+          for PROJECT_GRADLE in android/settings.gradle android/build.gradle; do
+            if [ -f "$PROJECT_GRADLE" ] && ! grep -q "jitpack.io" "$PROJECT_GRADLE"; then
+              awk '{print} /repositories {/{print "        maven { url \x27https://jitpack.io\x27 }"}' "$PROJECT_GRADLE" > tmp_gradle.gradle
+              mv tmp_gradle.gradle "$PROJECT_GRADLE"
+            fi
+          done
+
+          GRADLE=android/app/build.gradle
+          awk '{print} /^dependencies {/ && !x {
+            print "    implementation \x27org.torproject:tor-android-binary:0.4.7.13\x27";
+            print "    implementation \x27com.github.guardianproject:IPtProxy:2.5.0\x27";
+            x=1
+          }' "$GRADLE" > tmp_gradle.gradle
+          mv tmp_gradle.gradle "$GRADLE"
 
       - name: Add WireGuard dependency to app build.gradle
         run: |
@@ -78,6 +100,25 @@ jobs:
           MANIFEST=android/app/src/main/AndroidManifest.xml
           if ! grep -q "POST_NOTIFICATIONS" "$MANIFEST"; then
             sed -i "0,/<application/s//<uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" \/>\n    <application/" "$MANIFEST"
+          fi
+          if ! grep -q "FOREGROUND_SERVICE\"" "$MANIFEST"; then
+            sed -i "0,/<application/s//<uses-permission android:name=\"android.permission.FOREGROUND_SERVICE\" \/>\n    <application/" "$MANIFEST"
+          fi
+          if ! grep -q "FOREGROUND_SERVICE_SPECIAL_USE" "$MANIFEST"; then
+            sed -i "0,/<application/s//<uses-permission android:name=\"android.permission.FOREGROUND_SERVICE_SPECIAL_USE\" \/>\n    <application/" "$MANIFEST"
+          fi
+
+      - name: Register TorVpnService in AndroidManifest
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          if ! grep -q "TorVpnService" "$MANIFEST"; then
+            awk '{if (/<\/application>/ && !x) {
+              print "    <service android:name=\".TorVpnService\" android:permission=\"android.permission.BIND_VPN_SERVICE\" android:exported=\"false\" android:foregroundServiceType=\"specialUse\">";
+              print "        <intent-filter><action android:name=\"android.net.VpnService\" /></intent-filter>";
+              print "    </service>";
+              x=1
+            } print}' "$MANIFEST" > tmp_manifest.xml
+            mv tmp_manifest.xml "$MANIFEST"
           fi
 
       - name: Setup JDK
