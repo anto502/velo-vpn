@@ -176,6 +176,51 @@ class VeloVpnPlugin : Plugin() {
     }
 
     @PluginMethod
+    fun connectTor(call: PluginCall) {
+        // Only one system VPN interface can be active at a time, so drop the
+        // WireGuard/WARP tunnel first if it's up.
+        try { backend?.setState(tunnel, Tunnel.State.DOWN, null) } catch (ignored: Exception) {}
+
+        val intent = VpnService.prepare(context)
+        if (intent != null) {
+            startActivityForResult(call, intent, "torVpnPermissionCallback")
+            return
+        }
+        startTorService(call)
+    }
+
+    @com.getcapacitor.annotation.ActivityCallback
+    private fun torVpnPermissionCallback(call: PluginCall, result: androidx.activity.result.ActivityResult) {
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            startTorService(call)
+        } else {
+            call.reject("VPN permission denied by user")
+        }
+    }
+
+    private fun startTorService(call: PluginCall) {
+        val svcIntent = android.content.Intent(context, TorVpnService::class.java)
+        svcIntent.action = TorVpnService.ACTION_CONNECT
+        androidx.core.content.ContextCompat.startForegroundService(context, svcIntent)
+        val ret = JSObject()
+        // Tor bootstrap happens asynchronously inside TorVpnService (can take
+        // 10-60s); this resolves once the service has been asked to start,
+        // not once Tor is actually circuit-ready.
+        ret.put("status", "connecting")
+        call.resolve(ret)
+    }
+
+    @PluginMethod
+    fun disconnectTor(call: PluginCall) {
+        val svcIntent = android.content.Intent(context, TorVpnService::class.java)
+        svcIntent.action = TorVpnService.ACTION_DISCONNECT
+        context.startService(svcIntent)
+        val ret = JSObject()
+        ret.put("status", "disconnected")
+        call.resolve(ret)
+    }
+
+    @PluginMethod
     fun disconnect(call: PluginCall) {
         try {
             backend?.setState(tunnel, Tunnel.State.DOWN, null)
