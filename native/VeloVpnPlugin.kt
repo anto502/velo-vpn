@@ -245,12 +245,20 @@ class VeloVpnPlugin : Plugin() {
 
     private fun getOrCreateWireGuardConfig(): String {
         prefs().getString(prefsKeyConfig, null)?.let { cached ->
-            return if (cached.contains("PersistentKeepalive")) {
-                cached
+            // Old cached configs from before the IPv4-only fix still route
+            // ::/0, which silently breaks connectivity on IPv6-flaky mobile
+            // networks. Discard those so a fresh IPv4-only identity gets
+            // registered instead of reusing the broken one forever.
+            if (cached.contains("::/0") || cached.contains("/128")) {
+                prefs().edit().remove(prefsKeyConfig).apply()
             } else {
-                val patched = cached.trimEnd() + "\nPersistentKeepalive = 25\n"
-                prefs().edit().putString(prefsKeyConfig, patched).apply()
-                patched
+                return if (cached.contains("PersistentKeepalive")) {
+                    cached
+                } else {
+                    val patched = cached.trimEnd() + "\nPersistentKeepalive = 25\n"
+                    prefs().edit().putString(prefsKeyConfig, patched).apply()
+                    patched
+                }
             }
         }
         val fresh = registerNewWarpIdentity()
@@ -289,21 +297,24 @@ class VeloVpnPlugin : Plugin() {
         val addresses = regJson.getJSONObject("config").getJSONObject("interface").getJSONObject("addresses")
         val peer = regJson.getJSONObject("config").getJSONArray("peers").getJSONObject(0)
         val ipv4 = addresses.getString("v4")
-        val ipv6 = addresses.getString("v6")
         val peerPublicKey = peer.getString("public_key")
         val endpointHost = peer.getJSONObject("endpoint").getString("host")
 
+        // IPv4-only on purpose: many mobile carrier networks (common in
+        // Myanmar) have broken/partial IPv6 support. Forcing ::/0 through the
+        // tunnel on such a network silently blackholes IPv6-preferred traffic
+        // — the tunnel still reports "connected" but nothing actually loads.
         return """
             [Interface]
             PrivateKey = $privateKeyB64
-            Address = $ipv4/32, $ipv6/128
-            DNS = 1.1.1.1, 2606:4700:4700::1111
+            Address = $ipv4/32
+            DNS = 1.1.1.1
             MTU = 1280
 
             [Peer]
             PublicKey = $peerPublicKey
             Endpoint = $endpointHost
-            AllowedIPs = 0.0.0.0/0, ::/0
+            AllowedIPs = 0.0.0.0/0
             PersistentKeepalive = 25
         """.trimIndent()
     }
