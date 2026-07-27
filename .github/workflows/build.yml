@@ -62,28 +62,44 @@ jobs:
 
           if [ -f android/app/build.gradle ]; then
             GRADLE=android/app/build.gradle
-            # Module-level repositories{} block works regardless of how the
-            # root project/settings.gradle is set up, so this is the most
-            # reliable place to add JitPack.
-            if ! grep -q "jitpack.io" "$GRADLE"; then
-              awk '{ if (/^android {/ && !r) { print "repositories {"; print "    maven { url \x27https://jitpack.io\x27 }"; print "}"; r=1 } print }' "$GRADLE" > tmp_gradle
+            # Guardian Project's tor-android binary is hosted on their own
+            # maven repo (gpmaven), not Maven Central and not JitPack.
+            # The Orbot-IPtProxy fork (needed for its tun2socks addition) has
+            # no tagged GitHub releases, so JitPack must build it from the
+            # master branch directly via the documented "master-SNAPSHOT" version.
+            if ! grep -q "gpmaven" "$GRADLE"; then
+              awk '{ if (/^android {/ && !r) {
+                print "repositories {";
+                print "    maven { url \x27https://raw.githubusercontent.com/guardianproject/gpmaven/master\x27 }";
+                print "    maven { url \x27https://jitpack.io\x27 }";
+                print "}";
+                r=1
+              } print }' "$GRADLE" > tmp_gradle
               mv tmp_gradle "$GRADLE"
             fi
             awk '{print} /^dependencies {/ && !x {
-              print "    implementation \x27org.torproject:tor-android-binary:0.4.7.13\x27";
-              print "    implementation \x27com.github.guardianproject:IPtProxy:2.5.0\x27";
+              print "    implementation \x27info.guardianproject:tor-android:0.4.8.18\x27";
+              print "    implementation \x27info.guardianproject:jtorctl:0.4.5.7\x27";
+              print "    implementation \x27com.github.guardianproject:Orbot-IPtProxy:master-SNAPSHOT\x27";
               x=1
             }' "$GRADLE" > tmp_gradle
             mv tmp_gradle "$GRADLE"
           elif [ -f android/app/build.gradle.kts ]; then
             GRADLE=android/app/build.gradle.kts
-            if ! grep -q "jitpack.io" "$GRADLE"; then
-              awk '{ if (/^android {/ && !r) { print "repositories {"; print "    maven(url = \"https://jitpack.io\")"; print "}"; r=1 } print }' "$GRADLE" > tmp_gradle
+            if ! grep -q "gpmaven" "$GRADLE"; then
+              awk '{ if (/^android {/ && !r) {
+                print "repositories {";
+                print "    maven(url = \"https://raw.githubusercontent.com/guardianproject/gpmaven/master\")";
+                print "    maven(url = \"https://jitpack.io\")";
+                print "}";
+                r=1
+              } print }' "$GRADLE" > tmp_gradle
               mv tmp_gradle "$GRADLE"
             fi
             awk '{print} /^dependencies {/ && !x {
-              print "    implementation(\"org.torproject:tor-android-binary:0.4.7.13\")";
-              print "    implementation(\"com.github.guardianproject:IPtProxy:2.5.0\")";
+              print "    implementation(\"info.guardianproject:tor-android:0.4.8.18\")";
+              print "    implementation(\"info.guardianproject:jtorctl:0.4.5.7\")";
+              print "    implementation(\"com.github.guardianproject:Orbot-IPtProxy:master-SNAPSHOT\")";
               x=1
             }' "$GRADLE" > tmp_gradle
             mv tmp_gradle "$GRADLE"
@@ -160,6 +176,8 @@ jobs:
             '    }' \
             '}' \
             > "$MAIN"
+
+      
 
       - name: Add AdMob App ID to AndroidManifest
         run: |
