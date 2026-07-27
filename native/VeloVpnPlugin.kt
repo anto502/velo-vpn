@@ -244,7 +244,15 @@ class VeloVpnPlugin : Plugin() {
         context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
 
     private fun getOrCreateWireGuardConfig(): String {
-        prefs().getString(prefsKeyConfig, null)?.let { return it }
+        prefs().getString(prefsKeyConfig, null)?.let { cached ->
+            return if (cached.contains("PersistentKeepalive")) {
+                cached
+            } else {
+                val patched = cached.trimEnd() + "\nPersistentKeepalive = 25\n"
+                prefs().edit().putString(prefsKeyConfig, patched).apply()
+                patched
+            }
+        }
         val fresh = registerNewWarpIdentity()
         prefs().edit().putString(prefsKeyConfig, fresh).apply()
         return fresh
@@ -296,6 +304,7 @@ class VeloVpnPlugin : Plugin() {
             PublicKey = $peerPublicKey
             Endpoint = $endpointHost
             AllowedIPs = 0.0.0.0/0, ::/0
+            PersistentKeepalive = 25
         """.trimIndent()
     }
 
