@@ -22,7 +22,7 @@ jobs:
         run: |
           mkdir -p android/app/src/main/java/com/anto502/velovpn
           cp native/VeloVpnPlugin.kt android/app/src/main/java/com/anto502/velovpn/VeloVpnPlugin.kt
-          cp native/TorVpnService.kt android/app/src/main/java/com/anto502/velovpn/TorVpnService.kt
+          cp native/TorEngineService.kt android/app/src/main/java/com/anto502/velovpn/TorEngineService.kt
       - name: Bump minSdkVersion for WireGuard
         run: |
           sed -i 's/minSdkVersion = [0-9]*/minSdkVersion = 24/' android/variables.gradle
@@ -34,44 +34,16 @@ jobs:
 
       - name: Add Tor dependencies to app build.gradle
         run: |
-          # Capacitor's generated Android project may use Groovy (settings.gradle,
-          # build.gradle) OR Kotlin DSL (settings.gradle.kts, build.gradle.kts)
-          # depending on the Capacitor CLI version. Detect whichever actually
-          # exists and use the matching syntax for each.
-          add_jitpack_groovy() {
-            local F="$1"
-            if [ -f "$F" ] && ! grep -q "jitpack.io" "$F"; then
-              awk '{print} /repositories {/{print "        maven { url \x27https://jitpack.io\x27 }"}' "$F" > tmp_gradle
-              mv tmp_gradle "$F"
-              echo "Patched (groovy): $F"
-            fi
-          }
-          add_jitpack_kts() {
-            local F="$1"
-            if [ -f "$F" ] && ! grep -q "jitpack.io" "$F"; then
-              awk '{print} /repositories {/{print "        maven(url = \"https://jitpack.io\")"}' "$F" > tmp_gradle
-              mv tmp_gradle "$F"
-              echo "Patched (kts): $F"
-            fi
-          }
-
-          add_jitpack_groovy android/settings.gradle
-          add_jitpack_groovy android/build.gradle
-          add_jitpack_kts android/settings.gradle.kts
-          add_jitpack_kts android/build.gradle.kts
-
+          # Guardian Project's tor-android binary is hosted on their own maven
+          # repo (gpmaven), not Maven Central and not JitPack. We're only
+          # bootstrapping the Tor engine itself (local SOCKS proxy) — no
+          # tun2socks/whole-device routing — so this is the only repo/dep set needed.
           if [ -f android/app/build.gradle ]; then
             GRADLE=android/app/build.gradle
-            # Guardian Project's tor-android binary is hosted on their own
-            # maven repo (gpmaven), not Maven Central and not JitPack.
-            # The Orbot-IPtProxy fork (needed for its tun2socks addition) has
-            # no tagged GitHub releases, so JitPack must build it from the
-            # master branch directly via the documented "master-SNAPSHOT" version.
             if ! grep -q "gpmaven" "$GRADLE"; then
               awk '{ if (/^android {/ && !r) {
                 print "repositories {";
                 print "    maven { url \x27https://raw.githubusercontent.com/guardianproject/gpmaven/master\x27 }";
-                print "    maven { url \x27https://jitpack.io\x27 }";
                 print "}";
                 r=1
               } print }' "$GRADLE" > tmp_gradle
@@ -80,7 +52,6 @@ jobs:
             awk '{print} /^dependencies {/ && !x {
               print "    implementation \x27info.guardianproject:tor-android:0.4.8.18\x27";
               print "    implementation \x27info.guardianproject:jtorctl:0.4.5.7\x27";
-              print "    implementation \x27com.github.guardianproject:Orbot-IPtProxy:master-SNAPSHOT\x27";
               x=1
             }' "$GRADLE" > tmp_gradle
             mv tmp_gradle "$GRADLE"
@@ -90,7 +61,6 @@ jobs:
               awk '{ if (/^android {/ && !r) {
                 print "repositories {";
                 print "    maven(url = \"https://raw.githubusercontent.com/guardianproject/gpmaven/master\")";
-                print "    maven(url = \"https://jitpack.io\")";
                 print "}";
                 r=1
               } print }' "$GRADLE" > tmp_gradle
@@ -99,14 +69,11 @@ jobs:
             awk '{print} /^dependencies {/ && !x {
               print "    implementation(\"info.guardianproject:tor-android:0.4.8.18\")";
               print "    implementation(\"info.guardianproject:jtorctl:0.4.5.7\")";
-              print "    implementation(\"com.github.guardianproject:Orbot-IPtProxy:master-SNAPSHOT\")";
               x=1
             }' "$GRADLE" > tmp_gradle
             mv tmp_gradle "$GRADLE"
           fi
 
-          echo "---- settings.gradle(.kts) after patch ----"
-          cat android/settings.gradle 2>/dev/null || cat android/settings.gradle.kts 2>/dev/null
           echo "---- app/build.gradle(.kts) after patch ----"
           cat android/app/build.gradle 2>/dev/null || cat android/app/build.gradle.kts 2>/dev/null
 
@@ -198,13 +165,13 @@ jobs:
             sed -i "0,/<application/s//<uses-permission android:name=\"android.permission.FOREGROUND_SERVICE_SPECIAL_USE\" \/>\n    <application/" "$MANIFEST"
           fi
 
-      - name: Register TorVpnService in AndroidManifest
+      - name: Register TorEngineService in AndroidManifest
         run: |
           MANIFEST=android/app/src/main/AndroidManifest.xml
-          if ! grep -q "TorVpnService" "$MANIFEST"; then
+          if ! grep -q "TorEngineService" "$MANIFEST"; then
             awk '{if (/<\/application>/ && !x) {
-              print "    <service android:name=\".TorVpnService\" android:permission=\"android.permission.BIND_VPN_SERVICE\" android:exported=\"false\" android:foregroundServiceType=\"specialUse\">";
-              print "        <intent-filter><action android:name=\"android.net.VpnService\" /></intent-filter>";
+              print "    <service android:name=\".TorEngineService\" android:exported=\"false\" android:foregroundServiceType=\"specialUse\">";
+              print "        <property android:name=\"android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE\" android:value=\"tor-proxy\" />";
               print "    </service>";
               x=1
             } print}' "$MANIFEST" > tmp_manifest.xml
