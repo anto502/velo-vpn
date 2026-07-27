@@ -5,21 +5,26 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.ServiceConnection
 import android.net.VpnService
 import android.os.Build
+import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
 import org.torproject.jni.TorService
-// gomobile-generated package for the IPtProxy AAR; if the CI build reports
+// gomobile-generated package for the Orbot-IPtProxy AAR (JitPack: master-SNAPSHOT,
+// since that fork has no tagged releases). If the CI build reports
 // "unresolved reference: IPtProxy" this import path is the first thing to check
 // against the actual jar contents (e.g. `IPtProxy.IPtProxy` vs plain `IPtProxy`).
 import IPtProxy.IPtProxy
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Routes ALL device traffic through Tor: brings the local Tor daemon up
@@ -44,16 +49,16 @@ class TorVpnService : VpnService() {
         private const val CHANNEL_ID = "velo_vpn_tor"
         private const val NOTIFICATION_ID = 42
         private const val SOCKS_HOST = "127.0.0.1"
-        // Default SOCKS port tor-android-binary's bundled torrc listens on.
-        // Verify against TorService's actual bound port if bootstrap succeeds
-        // but tun2socks can't connect.
-        private const val SOCKS_PORT = 9050
+        // Fallback only, used if reading TorService's actual bound port fails.
+        private const val SOCKS_PORT_FALLBACK = 9050
         private const val VPN_MTU = 1500
     }
 
     private var tunFd: ParcelFileDescriptor? = null
     private val tun2socksRunning = AtomicBoolean(false)
     private var torStatusReceiver: BroadcastReceiver? = null
+    private var torServiceBinder: TorService? = null
+    private var torServiceConnection: ServiceConnection? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -81,7 +86,13 @@ class TorVpnService : VpnService() {
         }.start()
     }
 
-    /** Starts org.torproject.jni.TorService and waits for it to report ON. */
+    /**
+     * Starts and binds to org.torproject.jni.TorService, waiting for it to
+     * report status ON. Binding (rather than just startService) lets us read
+     * back the actual SOCKS port TorService picked, via getSocksPort() —
+     * see guardianproject/tor-android's androidTest suite, which does the
+     * same thing.
+     */
     private fun bootstrapTor(timeoutSeconds: Long): Boolean {
         val latch = CountDownLatch(1)
         val gotOn = AtomicBoolean(false)
@@ -100,7 +111,20 @@ class TorVpnService : VpnService() {
         torStatusReceiver = receiver
         registerReceiver(receiver, IntentFilter(TorService.ACTION_STATUS))
 
-        startService(Intent(this, TorService::class.java))
+        val connection = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+                // TorService's binder IS the TorService instance itself
+                // (see guardianproject/tor-android sample app).
+                torServiceBinder = binder as? TorService
+            }
+            override fun onServiceDisconnected(name: ComponentName?) {
+                torServiceBinder = null
+            }
+        }
+        torServiceConnection = connection
+        val svcIntent = Intent(this, TorService::class.java)
+        startService(svcIntent)
+        bindService(svcIntent, connection, Context.BIND_AUTO_CREATE)
 
         latch.await(timeoutSeconds, TimeUnit.SECONDS)
         try { unregisterReceiver(receiver) } catch (ignored: Exception) {}
@@ -120,13 +144,19 @@ class TorVpnService : VpnService() {
         tunFd = pfd
         tun2socksRunning.set(true)
 
-        // Hands the tun file descriptor to IPtProxy's bundled tun2socks, which
-        // reads/writes raw IP packets on the fd and forwards the TCP/UDP
-        // streams inside them to Tor's local SOCKS proxy.
+        val socksPort = try {
+            torServiceBinder?.socksPort ?: SOCKS_PORT_FALLBACK
+        } catch (e: Exception) {
+            SOCKS_PORT_FALLBACK
+        }
+
+        // Hands the tun file descriptor to the Orbot-IPtProxy fork's bundled
+        // tun2socks, which reads/writes raw IP packets on the fd and forwards
+        // the TCP/UDP streams inside them to Tor's local SOCKS proxy.
         IPtProxy.Tun2socks.start(
             /* fd = */ pfd.fd.toLong(),
             /* mtu = */ VPN_MTU.toLong(),
-            /* socksServerAddr = */ "$SOCKS_HOST:$SOCKS_PORT",
+            /* socksServerAddr = */ "$SOCKS_HOST:$socksPort",
             /* socksUsername = */ "",
             /* socksPassword = */ "",
             /* udpgwServerAddr = */ "",
@@ -140,6 +170,11 @@ class TorVpnService : VpnService() {
         }
         try { tunFd?.close() } catch (ignored: Exception) {}
         tunFd = null
+        torServiceConnection?.let {
+            try { unbindService(it) } catch (ignored: Exception) {}
+        }
+        torServiceConnection = null
+        torServiceBinder = null
         try { stopService(Intent(this, TorService::class.java)) } catch (ignored: Exception) {}
         torStatusReceiver?.let {
             try { unregisterReceiver(it) } catch (ignored: Exception) {}
