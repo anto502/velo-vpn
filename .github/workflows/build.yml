@@ -77,6 +77,48 @@ jobs:
           echo "---- app/build.gradle(.kts) after patch ----"
           cat android/app/build.gradle 2>/dev/null || cat android/app/build.gradle.kts 2>/dev/null
 
+      - name: Add VPNGate (ics-openvpn) dependency to app build.gradle
+        run: |
+          # com.github.schwabe:ics-openvpn is only on JitPack. v0.6.73-production
+          # is the tag JitPack's own project page documents/lists as a working
+          # build (some other tags are known to fail building on JitPack).
+          if [ -f android/app/build.gradle ]; then
+            GRADLE=android/app/build.gradle
+            if ! grep -q "jitpack.io" "$GRADLE"; then
+              awk '{ if (/^android {/ && !r) {
+                print "repositories {";
+                print "    maven { url \x27https://jitpack.io\x27 }";
+                print "}";
+                r=1
+              } print }' "$GRADLE" > tmp_gradle
+              mv tmp_gradle "$GRADLE"
+            fi
+            awk '{print} /^dependencies {/ && !x {
+              print "    implementation \x27com.github.schwabe:ics-openvpn:v0.6.73-production\x27";
+              x=1
+            }' "$GRADLE" > tmp_gradle
+            mv tmp_gradle "$GRADLE"
+          elif [ -f android/app/build.gradle.kts ]; then
+            GRADLE=android/app/build.gradle.kts
+            if ! grep -q "jitpack.io" "$GRADLE"; then
+              awk '{ if (/^android {/ && !r) {
+                print "repositories {";
+                print "    maven(url = \"https://jitpack.io\")";
+                print "}";
+                r=1
+              } print }' "$GRADLE" > tmp_gradle
+              mv tmp_gradle "$GRADLE"
+            fi
+            awk '{print} /^dependencies {/ && !x {
+              print "    implementation(\"com.github.schwabe:ics-openvpn:v0.6.73-production\")";
+              x=1
+            }' "$GRADLE" > tmp_gradle
+            mv tmp_gradle "$GRADLE"
+          fi
+
+          echo "---- app/build.gradle(.kts) after VPNGate patch ----"
+          cat android/app/build.gradle 2>/dev/null || cat android/app/build.gradle.kts 2>/dev/null
+
       - name: Add WireGuard dependency to app build.gradle
         run: |
           if [ -f android/app/build.gradle ]; then
