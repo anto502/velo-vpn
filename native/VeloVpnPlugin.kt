@@ -16,9 +16,14 @@ import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.UnknownHostException
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -39,6 +44,15 @@ class VeloVpnPlugin : Plugin() {
     // short retry sequence resolves most of those without any user action.
     private val maxNetworkAttempts = 3
     private val baseBackoffMs = 800L
+
+    // Direct IPs for api.cloudflareclient.com — used as a fallback when DNS
+    // resolution of the domain itself fails, since some networks/countries
+    // block that specific domain (documented behavior, e.g. in Russia) while
+    // leaving the underlying Cloudflare IPs reachable.
+    private val knownWarpApiIps = listOf(
+        "188.114.98.128",
+        "188.114.99.128"
+    )
 
     inner class SimpleTunnel(private val name: String) : Tunnel {
         var state: Tunnel.State = Tunnel.State.DOWN
@@ -85,11 +99,12 @@ class VeloVpnPlugin : Plugin() {
                 ret.put("status", "connected")
                 call.resolve(ret)
             } catch (e: Exception) {
-                // If nothing worked after trying every known WARP endpoint, the
-                // cached identity/endpoint pair may just be a bad match for this
-                // network. Drop it so the *next* attempt registers a fresh
-                // identity instead of retrying the same dead combination forever.
-                prefs().edit().remove(prefsKeyConfig).apply()
+                // NOTE: we deliberately do NOT discard the cached identity here
+                // anymore. Registration is the most fragile/censorable network
+                // path (some networks specifically block Cloudflare's WARP
+                // registration API by domain), so a tunnel-connect failure that
+                // has nothing to do with the identity itself should not force
+                // every subsequent attempt to redo that fragile registration.
                 call.reject(describeConnectFailure(e))
             }
         }.start()
@@ -353,7 +368,30 @@ class VeloVpnPlugin : Plugin() {
     }
 
     private fun httpJson(urlStr: String, method: String, body: JSONObject, bearerToken: String?): JSONObject {
-        val conn = URL(urlStr).openConnection() as HttpURLConnection
+        val url = URL(urlStr)
+        try {
+            return httpJsonViaUrl(url, method, body, bearerToken)
+        } catch (e: UnknownHostException) {
+            // api.cloudflareclient.com's DOMAIN can be blocked at the DNS
+            // level by some ISPs/countries (this is a documented, known thing
+            // — e.g. Roscomnadzor does exactly this in Russia) even though
+            // Cloudflare's IPs themselves are reachable. Retry by connecting
+            // directly to a known WARP registration IP while keeping the
+            // hostname for SNI/Host/certificate validation, which routes
+            // around DNS-level blocking specifically.
+            for (ip in knownWarpApiIps) {
+                try {
+                    return httpJsonViaDirectIp(ip, url, method, body, bearerToken)
+                } catch (inner: Exception) {
+                    // try next candidate IP
+                }
+            }
+            throw e
+        }
+    }
+
+    private fun httpJsonViaUrl(url: URL, method: String, body: JSONObject, bearerToken: String?): JSONObject {
+        val conn = url.openConnection() as HttpURLConnection
         try {
             applyMethod(conn, method)
             conn.doOutput = true
@@ -373,12 +411,77 @@ class VeloVpnPlugin : Plugin() {
                 // HTTP-level rejection from Cloudflare itself — not transient,
                 // so this is thrown as a plain Exception (not IOException) so
                 // httpJsonWithRetry does not waste time retrying it.
-                throw Exception("$method $urlStr failed ($code): $text")
+                throw Exception("$method $url failed ($code): $text")
             }
             return JSONObject(text)
         } finally {
             conn.disconnect()
         }
+    }
+
+    // Connects to a raw IP address for the TCP/TLS layer (routing around DNS
+    // censorship of the hostname) while still presenting the real hostname
+    // for SNI/Host header/certificate validation, so the TLS handshake and
+    // Cloudflare's own routing both still work correctly.
+    private fun httpJsonViaDirectIp(ip: String, url: URL, method: String, body: JSONObject, bearerToken: String?): JSONObject {
+        val host = url.host
+        val port = if (url.port != -1) url.port else 443
+        val rawSocket = Socket()
+        rawSocket.connect(InetSocketAddress(InetAddress.getByName(ip), port), 15000)
+        rawSocket.soTimeout = 15000
+        val sslSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
+            .createSocket(rawSocket, host, port, true) as SSLSocket
+        sslSocket.startHandshake()
+
+        val bodyBytes = body.toString().toByteArray(Charsets.UTF_8)
+        val requestLines = StringBuilder()
+        requestLines.append("$method ${url.path}${if (url.query != null) "?${url.query}" else ""} HTTP/1.1\r\n")
+        requestLines.append("Host: $host\r\n")
+        requestLines.append("Content-Type: application/json\r\n")
+        requestLines.append("Content-Length: ${bodyBytes.size}\r\n")
+        requestLines.append("User-Agent: okhttp/3.12.1\r\n")
+        if (bearerToken != null) requestLines.append("Authorization: Bearer $bearerToken\r\n")
+        requestLines.append("Connection: close\r\n\r\n")
+
+        sslSocket.outputStream.write(requestLines.toString().toByteArray(Charsets.UTF_8))
+        sslSocket.outputStream.write(bodyBytes)
+        sslSocket.outputStream.flush()
+
+        val rawResponse = sslSocket.inputStream.bufferedReader().use { it.readText() }
+        sslSocket.close()
+
+        val headerEnd = rawResponse.indexOf("\r\n\r\n")
+        val headerPart = if (headerEnd >= 0) rawResponse.substring(0, headerEnd) else rawResponse
+        val statusLine = headerPart.lineSequence().firstOrNull() ?: ""
+        val code = Regex("""HTTP/1\.[01]\s+(\d+)""").find(statusLine)?.groupValues?.get(1)?.toIntOrNull() ?: -1
+        var text = if (headerEnd >= 0) rawResponse.substring(headerEnd + 4) else ""
+
+        // Undo chunked transfer-encoding if present (Cloudflare may use it).
+        if (headerPart.contains("Transfer-Encoding: chunked", ignoreCase = true)) {
+            text = dechunk(text)
+        }
+
+        if (code !in 200..299) {
+            throw Exception("$method $url failed ($code) via direct IP $ip: $text")
+        }
+        return JSONObject(text)
+    }
+
+    private fun dechunk(chunked: String): String {
+        val out = StringBuilder()
+        var idx = 0
+        while (idx < chunked.length) {
+            val lineEnd = chunked.indexOf("\r\n", idx)
+            if (lineEnd < 0) break
+            val sizeHex = chunked.substring(idx, lineEnd).trim()
+            val size = sizeHex.toIntOrNull(16) ?: break
+            if (size == 0) break
+            val chunkStart = lineEnd + 2
+            val chunkEnd = (chunkStart + size).coerceAtMost(chunked.length)
+            out.append(chunked, chunkStart, chunkEnd)
+            idx = chunkEnd + 2
+        }
+        return out.toString()
     }
 
     // HttpURLConnection only whitelists GET/POST/HEAD/OPTIONS/PUT/DELETE/TRACE,
