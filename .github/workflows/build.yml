@@ -94,7 +94,7 @@ jobs:
               mv tmp_gradle "$GRADLE"
             fi
             awk '{print} /^dependencies {/ && !x {
-              print "    implementation \x27com.github.schwabe:ics-openvpn:v0.6.73-production\x27";
+              print "    implementation \x27com.github.schwabe.ics-openvpn:main:v0.6.73-production\x27";
               x=1
             }' "$GRADLE" > tmp_gradle
             mv tmp_gradle "$GRADLE"
@@ -110,7 +110,7 @@ jobs:
               mv tmp_gradle "$GRADLE"
             fi
             awk '{print} /^dependencies {/ && !x {
-              print "    implementation(\"com.github.schwabe:ics-openvpn:v0.6.73-production\")";
+              print "    implementation(\"com.github.schwabe.ics-openvpn:main:v0.6.73-production\")";
               x=1
             }' "$GRADLE" > tmp_gradle
             mv tmp_gradle "$GRADLE"
@@ -185,8 +185,6 @@ jobs:
             '    }' \
             '}' \
             > "$MAIN"
-
-      
 
       - name: Add AdMob App ID to AndroidManifest
         run: |
