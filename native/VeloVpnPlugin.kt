@@ -245,21 +245,28 @@ class VeloVpnPlugin : Plugin() {
 
     private fun getOrCreateWireGuardConfig(): String {
         prefs().getString(prefsKeyConfig, null)?.let { cached ->
-            // Old cached configs from before the IPv4-only fix still route
-            // ::/0, which silently breaks connectivity on IPv6-flaky mobile
-            // networks. Discard those so a fresh IPv4-only identity gets
-            // registered instead of reusing the broken one forever.
-            if (cached.contains("::/0") || cached.contains("/128")) {
-                prefs().edit().remove(prefsKeyConfig).apply()
-            } else {
-                return if (cached.contains("PersistentKeepalive")) {
-                    cached
-                } else {
-                    val patched = cached.trimEnd() + "\nPersistentKeepalive = 25\n"
-                    prefs().edit().putString(prefsKeyConfig, patched).apply()
-                    patched
-                }
+            var patched = cached
+
+            // Strip IPv6 in place — keep the SAME already-registered identity
+            // and endpoint (which was already handshaking fine) rather than
+            // discarding it and forcing a brand new registration network call.
+            // Forcing re-registration here was the actual regression: it made
+            // every connect depend on reaching Cloudflare's REST API, which is
+            // a separate, less reliable network path than the WireGuard UDP
+            // tunnel itself.
+            patched = Regex("""(?m)^Address\s*=\s*([^,\n]+),\s*[^\n]+$""")
+                .replace(patched) { "Address = ${it.groupValues[1].trim()}" }
+            patched = Regex("""(?m)^DNS\s*=\s*([^,\n]+),\s*[^\n]+$""")
+                .replace(patched) { "DNS = ${it.groupValues[1].trim()}" }
+            patched = Regex("""(?m)^AllowedIPs\s*=\s*([^,\n]+),\s*[^\n]+$""")
+                .replace(patched) { "AllowedIPs = ${it.groupValues[1].trim()}" }
+            if (!patched.contains("PersistentKeepalive")) {
+                patched = patched.trimEnd() + "\nPersistentKeepalive = 25\n"
             }
+            if (patched != cached) {
+                prefs().edit().putString(prefsKeyConfig, patched).apply()
+            }
+            return patched
         }
         val fresh = registerNewWarpIdentity()
         prefs().edit().putString(prefsKeyConfig, fresh).apply()
