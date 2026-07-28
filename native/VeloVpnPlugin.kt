@@ -224,6 +224,156 @@ class VeloVpnPlugin : Plugin() {
         call.resolve(ret)
     }
 
+    // ---------------------------------------------------------------------
+    // VPNGate (OpenVPN, via the ics-openvpn library) — an alternative to the
+    // Cloudflare WARP path above, for networks where WARP's registration API
+    // itself is blocked. VPNGate servers are run by volunteers (an academic
+    // project, University of Tsukuba), reachable via a public CSV list.
+    //
+    // NOTE: ics-openvpn is normally embedded as a full app, not consumed as a
+    // clean library, so the exact entry points here (ConfigParser,
+    // ProfileManager, VPNLaunchHelper, OpenVPNService) are the most likely
+    // spot for a "unresolved reference" on first build — if that happens,
+    // the CI error will tell us which specific symbol needs adjusting.
+    // ---------------------------------------------------------------------
+
+    @PluginMethod
+    fun fetchVpnGateServers(call: PluginCall) {
+        Thread {
+            try {
+                val csvText = fetchVpnGateCsv()
+                val servers = parseVpnGateCsv(csvText)
+                val ret = JSObject()
+                val arr = org.json.JSONArray()
+                for (s in servers) arr.put(s)
+                ret.put("servers", arr)
+                call.resolve(ret)
+            } catch (e: Exception) {
+                call.reject("Failed to fetch VPNGate server list: ${e.message}")
+            }
+        }.start()
+    }
+
+    private fun fetchVpnGateCsv(): String {
+        val conn = URL("https://www.vpngate.net/api/iphone/").openConnection() as HttpURLConnection
+        conn.connectTimeout = 15000
+        conn.readTimeout = 15000
+        try {
+            return conn.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    // VPNGate's CSV: a couple of comment lines, then a header row, then one
+    // row per server. Fields are comma-separated; the last field
+    // (OpenVPN_ConfigData_Base64) can itself legitimately be a long base64
+    // blob with no commas, so simple split-by-comma is safe here.
+    private fun parseVpnGateCsv(csv: String): List<JSONObject> {
+        val lines = csv.lines().filter { it.isNotBlank() && !it.startsWith("*") && !it.startsWith("#") }
+        val out = mutableListOf<JSONObject>()
+        for (line in lines) {
+            val cols = line.split(",")
+            if (cols.size < 15) continue
+            try {
+                val obj = JSONObject()
+                obj.put("hostName", cols[0])
+                obj.put("ip", cols[1])
+                obj.put("score", cols[2].toLongOrNull() ?: 0)
+                obj.put("pingMs", cols[3].toIntOrNull() ?: -1)
+                obj.put("speedBps", cols[4].toLongOrNull() ?: 0)
+                obj.put("countryLong", cols[5])
+                obj.put("countryShort", cols[6])
+                obj.put("sessions", cols[7].toIntOrNull() ?: 0)
+                obj.put("ovpnConfigBase64", cols[14])
+                out.add(obj)
+            } catch (ignored: Exception) {
+                // Skip malformed rows rather than failing the whole list.
+            }
+        }
+        // Best servers (highest score = combination of speed/uptime/ping) first.
+        return out.sortedByDescending { it.getLong("score") }
+    }
+
+    @PluginMethod
+    fun connectVpnGate(call: PluginCall) {
+        val configBase64 = call.getString("ovpnConfigBase64")
+        if (configBase64.isNullOrBlank()) {
+            call.reject("ovpnConfigBase64 is required")
+            return
+        }
+        val intent = VpnService.prepare(context)
+        if (intent != null) {
+            savedVpnGateCall = call
+            savedVpnGateConfigBase64 = configBase64
+            startActivityForResult(call, intent, "vpnGatePermissionCallback")
+            return
+        }
+        doConnectVpnGate(call, configBase64)
+    }
+
+    private var savedVpnGateCall: PluginCall? = null
+    private var savedVpnGateConfigBase64: String? = null
+
+    @com.getcapacitor.annotation.ActivityCallback
+    private fun vpnGatePermissionCallback(call: PluginCall, result: androidx.activity.result.ActivityResult) {
+        val configBase64 = savedVpnGateConfigBase64
+        savedVpnGateConfigBase64 = null
+        if (result.resultCode == android.app.Activity.RESULT_OK && configBase64 != null) {
+            doConnectVpnGate(call, configBase64)
+        } else {
+            call.reject("VPN permission denied by user")
+        }
+    }
+
+    private fun doConnectVpnGate(call: PluginCall, configBase64: String) {
+        // Drop the WireGuard/WARP tunnel first — only one VPN interface can
+        // be active at a time.
+        try { backend?.setState(tunnel, Tunnel.State.DOWN, null) } catch (ignored: Exception) {}
+
+        Thread {
+            try {
+                val ovpnText = String(android.util.Base64.decode(configBase64, android.util.Base64.DEFAULT), Charsets.UTF_8)
+                val parser = de.blinkt.openvpn.core.ConfigParser()
+                parser.parseConfig(java.io.StringReader(ovpnText))
+                val profile = parser.convertProfile()
+                profile.mName = "VPNGate"
+                de.blinkt.openvpn.core.ProfileManager.setTemporaryProfile(context, profile)
+                de.blinkt.openvpn.core.VPNLaunchHelper.startOpenVpn(profile, context)
+
+                val ret = JSObject()
+                ret.put("status", "connecting")
+                call.resolve(ret)
+            } catch (e: Exception) {
+                call.reject("Failed to connect via VPNGate: ${e.message}")
+            }
+        }.start()
+    }
+
+    @PluginMethod
+    fun disconnectVpnGate(call: PluginCall) {
+        try {
+            val intent = android.content.Intent(context, de.blinkt.openvpn.core.OpenVPNService::class.java)
+            intent.action = de.blinkt.openvpn.core.OpenVPNService.START_SERVICE
+            val connection = object : android.content.ServiceConnection {
+                override fun onServiceConnected(name: android.content.ComponentName?, binder: android.os.IBinder?) {
+                    try {
+                        val svc = binder as? de.blinkt.openvpn.core.OpenVPNService
+                        svc?.stopVPN(false)
+                    } catch (ignored: Exception) {}
+                    try { context.unbindService(this) } catch (ignored: Exception) {}
+                }
+                override fun onServiceDisconnected(name: android.content.ComponentName?) {}
+            }
+            context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+            val ret = JSObject()
+            ret.put("status", "disconnected")
+            call.resolve(ret)
+        } catch (e: Exception) {
+            call.reject("Failed to disconnect VPNGate: ${e.message}")
+        }
+    }
+
     @PluginMethod
     fun disconnect(call: PluginCall) {
         try {
@@ -499,4 +649,4 @@ class VeloVpnPlugin : Plugin() {
             }
         }
     }
-                            }
+}
