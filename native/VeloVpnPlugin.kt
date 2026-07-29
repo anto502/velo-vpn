@@ -15,6 +15,8 @@ import com.wireguard.crypto.KeyPair
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -224,156 +226,6 @@ class VeloVpnPlugin : Plugin() {
         call.resolve(ret)
     }
 
-    // ---------------------------------------------------------------------
-    // VPNGate (OpenVPN, via the ics-openvpn library) — an alternative to the
-    // Cloudflare WARP path above, for networks where WARP's registration API
-    // itself is blocked. VPNGate servers are run by volunteers (an academic
-    // project, University of Tsukuba), reachable via a public CSV list.
-    //
-    // NOTE: ics-openvpn is normally embedded as a full app, not consumed as a
-    // clean library, so the exact entry points here (ConfigParser,
-    // ProfileManager, VPNLaunchHelper, OpenVPNService) are the most likely
-    // spot for a "unresolved reference" on first build — if that happens,
-    // the CI error will tell us which specific symbol needs adjusting.
-    // ---------------------------------------------------------------------
-
-    @PluginMethod
-    fun fetchVpnGateServers(call: PluginCall) {
-        Thread {
-            try {
-                val csvText = fetchVpnGateCsv()
-                val servers = parseVpnGateCsv(csvText)
-                val ret = JSObject()
-                val arr = org.json.JSONArray()
-                for (s in servers) arr.put(s)
-                ret.put("servers", arr)
-                call.resolve(ret)
-            } catch (e: Exception) {
-                call.reject("Failed to fetch VPNGate server list: ${e.message}")
-            }
-        }.start()
-    }
-
-    private fun fetchVpnGateCsv(): String {
-        val conn = URL("https://www.vpngate.net/api/iphone/").openConnection() as HttpURLConnection
-        conn.connectTimeout = 15000
-        conn.readTimeout = 15000
-        try {
-            return conn.inputStream.bufferedReader().use { it.readText() }
-        } finally {
-            conn.disconnect()
-        }
-    }
-
-    // VPNGate's CSV: a couple of comment lines, then a header row, then one
-    // row per server. Fields are comma-separated; the last field
-    // (OpenVPN_ConfigData_Base64) can itself legitimately be a long base64
-    // blob with no commas, so simple split-by-comma is safe here.
-    private fun parseVpnGateCsv(csv: String): List<JSONObject> {
-        val lines = csv.lines().filter { it.isNotBlank() && !it.startsWith("*") && !it.startsWith("#") }
-        val out = mutableListOf<JSONObject>()
-        for (line in lines) {
-            val cols = line.split(",")
-            if (cols.size < 15) continue
-            try {
-                val obj = JSONObject()
-                obj.put("hostName", cols[0])
-                obj.put("ip", cols[1])
-                obj.put("score", cols[2].toLongOrNull() ?: 0)
-                obj.put("pingMs", cols[3].toIntOrNull() ?: -1)
-                obj.put("speedBps", cols[4].toLongOrNull() ?: 0)
-                obj.put("countryLong", cols[5])
-                obj.put("countryShort", cols[6])
-                obj.put("sessions", cols[7].toIntOrNull() ?: 0)
-                obj.put("ovpnConfigBase64", cols[14])
-                out.add(obj)
-            } catch (ignored: Exception) {
-                // Skip malformed rows rather than failing the whole list.
-            }
-        }
-        // Best servers (highest score = combination of speed/uptime/ping) first.
-        return out.sortedByDescending { it.getLong("score") }
-    }
-
-    @PluginMethod
-    fun connectVpnGate(call: PluginCall) {
-        val configBase64 = call.getString("ovpnConfigBase64")
-        if (configBase64.isNullOrBlank()) {
-            call.reject("ovpnConfigBase64 is required")
-            return
-        }
-        val intent = VpnService.prepare(context)
-        if (intent != null) {
-            savedVpnGateCall = call
-            savedVpnGateConfigBase64 = configBase64
-            startActivityForResult(call, intent, "vpnGatePermissionCallback")
-            return
-        }
-        doConnectVpnGate(call, configBase64)
-    }
-
-    private var savedVpnGateCall: PluginCall? = null
-    private var savedVpnGateConfigBase64: String? = null
-
-    @com.getcapacitor.annotation.ActivityCallback
-    private fun vpnGatePermissionCallback(call: PluginCall, result: androidx.activity.result.ActivityResult) {
-        val configBase64 = savedVpnGateConfigBase64
-        savedVpnGateConfigBase64 = null
-        if (result.resultCode == android.app.Activity.RESULT_OK && configBase64 != null) {
-            doConnectVpnGate(call, configBase64)
-        } else {
-            call.reject("VPN permission denied by user")
-        }
-    }
-
-    private fun doConnectVpnGate(call: PluginCall, configBase64: String) {
-        // Drop the WireGuard/WARP tunnel first — only one VPN interface can
-        // be active at a time.
-        try { backend?.setState(tunnel, Tunnel.State.DOWN, null) } catch (ignored: Exception) {}
-
-        Thread {
-            try {
-                val ovpnText = String(android.util.Base64.decode(configBase64, android.util.Base64.DEFAULT), Charsets.UTF_8)
-                val parser = de.blinkt.openvpn.core.ConfigParser()
-                parser.parseConfig(java.io.StringReader(ovpnText))
-                val profile = parser.convertProfile()
-                profile.mName = "VPNGate"
-                de.blinkt.openvpn.core.ProfileManager.setTemporaryProfile(context, profile)
-                de.blinkt.openvpn.core.VPNLaunchHelper.startOpenVpn(profile, context)
-
-                val ret = JSObject()
-                ret.put("status", "connecting")
-                call.resolve(ret)
-            } catch (e: Exception) {
-                call.reject("Failed to connect via VPNGate: ${e.message}")
-            }
-        }.start()
-    }
-
-    @PluginMethod
-    fun disconnectVpnGate(call: PluginCall) {
-        try {
-            val intent = android.content.Intent(context, de.blinkt.openvpn.core.OpenVPNService::class.java)
-            intent.action = de.blinkt.openvpn.core.OpenVPNService.START_SERVICE
-            val connection = object : android.content.ServiceConnection {
-                override fun onServiceConnected(name: android.content.ComponentName?, binder: android.os.IBinder?) {
-                    try {
-                        val svc = binder as? de.blinkt.openvpn.core.OpenVPNService
-                        svc?.stopVPN(false)
-                    } catch (ignored: Exception) {}
-                    try { context.unbindService(this) } catch (ignored: Exception) {}
-                }
-                override fun onServiceDisconnected(name: android.content.ComponentName?) {}
-            }
-            context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
-            val ret = JSObject()
-            ret.put("status", "disconnected")
-            call.resolve(ret)
-        } catch (e: Exception) {
-            call.reject("Failed to disconnect VPNGate: ${e.message}")
-        }
-    }
-
     @PluginMethod
     fun disconnect(call: PluginCall) {
         try {
@@ -522,22 +374,35 @@ class VeloVpnPlugin : Plugin() {
         try {
             return httpJsonViaUrl(url, method, body, bearerToken)
         } catch (e: UnknownHostException) {
-            // api.cloudflareclient.com's DOMAIN can be blocked at the DNS
-            // level by some ISPs/countries (this is a documented, known thing
-            // — e.g. Roscomnadzor does exactly this in Russia) even though
-            // Cloudflare's IPs themselves are reachable. Retry by connecting
-            // directly to a known WARP registration IP while keeping the
-            // hostname for SNI/Host/certificate validation, which routes
-            // around DNS-level blocking specifically.
-            for (ip in knownWarpApiIps) {
-                try {
-                    return httpJsonViaDirectIp(ip, url, method, body, bearerToken)
-                } catch (inner: Exception) {
-                    // try next candidate IP
-                }
-            }
-            throw e
+            return httpJsonViaDirectIpCandidates(url, method, body, bearerToken, e)
+        } catch (e: SocketTimeoutException) {
+            // A timeout (not a DNS failure) on the normal path can mean SNI-based
+            // filtering is dropping the connection after seeing the hostname in
+            // the TLS ClientHello, rather than DNS being blocked. Direct-IP
+            // fragmented-handshake attempts below try to route around that too.
+            return httpJsonViaDirectIpCandidates(url, method, body, bearerToken, e)
         }
+    }
+
+    private fun httpJsonViaDirectIpCandidates(url: URL, method: String, body: JSONObject, bearerToken: String?, original: Exception): JSONObject {
+        // api.cloudflareclient.com's DOMAIN (and possibly its SNI string) can be
+        // blocked by some ISPs/countries (documented behavior, e.g. Roscomnadzor
+        // in Russia) even though the underlying Cloudflare IPs are reachable.
+        // Try each known IP twice: once with a normal TLS handshake (routes
+        // around DNS-only blocking), then once with the ClientHello split
+        // across two TCP segments (an SNI-fragmentation technique that can
+        // route around simple DPI filters that only inspect the first packet).
+        for (ip in knownWarpApiIps) {
+            try {
+                return httpJsonViaDirectIp(ip, url, method, body, bearerToken, fragment = false)
+            } catch (inner: Exception) { /* try next */ }
+        }
+        for (ip in knownWarpApiIps) {
+            try {
+                return httpJsonViaDirectIp(ip, url, method, body, bearerToken, fragment = true)
+            } catch (inner: Exception) { /* try next */ }
+        }
+        throw original
     }
 
     private fun httpJsonViaUrl(url: URL, method: String, body: JSONObject, bearerToken: String?): JSONObject {
@@ -573,14 +438,68 @@ class VeloVpnPlugin : Plugin() {
     // censorship of the hostname) while still presenting the real hostname
     // for SNI/Host header/certificate validation, so the TLS handshake and
     // Cloudflare's own routing both still work correctly.
-    private fun httpJsonViaDirectIp(ip: String, url: URL, method: String, body: JSONObject, bearerToken: String?): JSONObject {
+    // Wraps an already-connected Socket and, only for the very first write
+    // (the TLS ClientHello, which carries the plaintext SNI hostname), splits
+    // it into two separate TCP writes with a short flush/delay between them.
+    // Simple DPI systems that only inspect the first packet's payload for a
+    // blocked SNI string can fail to reassemble/see it across two packets —
+    // this is the same idea real anti-censorship tools (e.g. GoodbyeDPI)
+    // use, adapted for a plain Java/Kotlin socket. Whether Android's TLS
+    // stack (Conscrypt) actually routes handshake writes through this
+    // override rather than a native fast-path is unverified; if this
+    // doesn't help, that's the likely reason.
+    private class FragmentingSocket(private val delegate: Socket) : Socket() {
+        private var fragmentedOnce = false
+
+        override fun getOutputStream(): OutputStream {
+            val real = delegate.getOutputStream()
+            return object : OutputStream() {
+                override fun write(b: Int) { real.write(b) }
+                override fun write(b: ByteArray) { write(b, 0, b.size) }
+                override fun write(b: ByteArray, off: Int, len: Int) {
+                    if (!fragmentedOnce && len > 20) {
+                        fragmentedOnce = true
+                        val mid = len / 2
+                        real.write(b, off, mid)
+                        real.flush()
+                        try { Thread.sleep(10) } catch (ignored: InterruptedException) {}
+                        real.write(b, off + mid, len - mid)
+                        real.flush()
+                    } else {
+                        real.write(b, off, len)
+                    }
+                }
+                override fun flush() { real.flush() }
+                override fun close() { real.close() }
+            }
+        }
+
+        override fun getInputStream(): InputStream = delegate.getInputStream()
+        override fun isConnected(): Boolean = delegate.isConnected
+        override fun isClosed(): Boolean = delegate.isClosed
+        override fun isBound(): Boolean = delegate.isBound
+        override fun getInetAddress() = delegate.inetAddress
+        override fun getLocalAddress() = delegate.localAddress
+        override fun getPort(): Int = delegate.port
+        override fun getLocalPort(): Int = delegate.localPort
+        override fun close() { delegate.close() }
+        override fun setSoTimeout(timeout: Int) { delegate.soTimeout = timeout }
+        override fun getSoTimeout(): Int = delegate.soTimeout
+        override fun setTcpNoDelay(on: Boolean) { delegate.tcpNoDelay = on }
+        override fun getTcpNoDelay(): Boolean = delegate.tcpNoDelay
+    }
+
+    private fun httpJsonViaDirectIp(ip: String, url: URL, method: String, body: JSONObject, bearerToken: String?, fragment: Boolean = false): JSONObject {
         val host = url.host
         val port = if (url.port != -1) url.port else 443
         val rawSocket = Socket()
         rawSocket.connect(InetSocketAddress(InetAddress.getByName(ip), port), 15000)
         rawSocket.soTimeout = 15000
+        rawSocket.tcpNoDelay = true // required for fragmentation to actually produce separate packets
+
+        val socketForTls: Socket = if (fragment) FragmentingSocket(rawSocket) else rawSocket
         val sslSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
-            .createSocket(rawSocket, host, port, true) as SSLSocket
+            .createSocket(socketForTls, host, port, true) as SSLSocket
         sslSocket.startHandshake()
 
         val bodyBytes = body.toString().toByteArray(Charsets.UTF_8)
@@ -649,4 +568,4 @@ class VeloVpnPlugin : Plugin() {
             }
         }
     }
-}
+                            }
